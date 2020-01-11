@@ -3,14 +3,12 @@ package com.example.customclassificationml;
 import android.app.AlertDialog;
 import android.graphics.Bitmap;
 import android.graphics.Color;
-import android.os.AsyncTask;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -37,11 +35,11 @@ import com.otaliastudios.cameraview.controls.Mode;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.util.Calendar;
 
 import dmax.dialog.SpotsDialog;
 
@@ -51,8 +49,16 @@ public class MainActivity extends AppCompatActivity {
     private CameraView cameraView;
     private ImageView imageView;
     private AlertDialog alertDialog;
+    private final int inputImageSize = 299;
     private FirebaseModelInterpreter interpreter;
     private FirebaseModelInputOutputOptions inputOutputOptions;
+    private final int classifications = 5;
+    private final int imageChannels = 3;
+    private final int batchSize = 1;
+    private JSONObject labels;
+    private float[] outputProbabilities;
+    private String outputResult;
+    private String TAG = "CustomModel: ";
 
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -63,7 +69,6 @@ public class MainActivity extends AppCompatActivity {
         cameraView = findViewById(R.id.cameraView);
         cameraView.setMode(Mode.PICTURE);
         cameraView.setLifecycleOwner(this);
-        initialize_model();
         alertDialog = new SpotsDialog.Builder()
                 .setContext(this)
                 .setMessage("Processing...")
@@ -72,70 +77,76 @@ public class MainActivity extends AppCompatActivity {
         startBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                Log.d(TAG, "onClick: Requested to take a picture at: " + Calendar.getInstance().getTime());
                 cameraView.takePicture();
-                alertDialog.show();
             }
         });
         cameraView.addCameraListener(new CameraListener() {
             @Override
             public void onPictureTaken(@NonNull PictureResult result) {
+                Log.d(TAG, "onPictureTaken: Picture taken at: " + Calendar.getInstance().getTime());
                 super.onPictureTaken(result);
-                result.toBitmap(result.getSize().getWidth(), result.getSize().getWidth(), new BitmapCallback() {
+                result.toBitmap(new BitmapCallback() {
                     @Override
                     public void onBitmapReady(@Nullable Bitmap bitmap) {
-                        processClassification(bitmap);
+                        bitmap = Bitmap.createScaledBitmap(bitmap, inputImageSize, inputImageSize, true);
+                        imageView.setImageBitmap(bitmap);
+                        alertDialog.show();
+                        normalizeInput(bitmap);
                     }
                 });
             }
         });
-        check();
+        try {
+            initializeModel();
+            Log.d(TAG, "onCreate: CustomModel and Interpreter are successfully registered !!");
+        } catch (FirebaseMLException e) {
+            Log.d(TAG, "onCreate: Failed to register CustomModel and Interpreter !!");
+        }
     }
 
-    private void check() {
-        String results = null;
+    private void getLabels() {
+        String line = "";
+        String results = "";
         try {
-            InputStream inputStream = new BufferedInputStream(this.getAssets().open("reverse_labels.json"));
+            InputStream inputStream = this.getAssets().open("flower_labels.json");
             BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
-            while (reader.readLine() != null) {
-                results += reader.readLine();
+            while (line != null) {
+                results += line;
+                line = reader.readLine();
             }
-            JSONObject jsonObject = new JSONObject(results);
+            labels = new JSONObject(results);
+            Log.d(TAG, "getLabels: Successfully got all labels !!");
         } catch (IOException e) {
+            Log.d(TAG, "getLabels: Failed to get labels due to IOError !!");
             e.printStackTrace();
         } catch (JSONException e) {
+            Log.d(TAG, "getLabels: File is not in JSON format, labels are not created !!");
             e.printStackTrace();
         }
-
     }
 
-    private void initialize_model() {
+    private void initializeModel() throws FirebaseMLException {
+        getLabels();
         FirebaseCustomLocalModel localModel = new FirebaseCustomLocalModel.Builder()
-                .setAssetFilePath("converted_model.tflite")
+                .setAssetFilePath("flower_model_optimized.tflite")
                 .build();
-        try {
-            FirebaseModelInterpreterOptions options =
-                    new FirebaseModelInterpreterOptions.Builder(localModel).build();
-            interpreter = FirebaseModelInterpreter.getInstance(options);
-        } catch (FirebaseMLException e) {
-            Toast.makeText(this, "Interpreter not instantiated", Toast.LENGTH_SHORT).show();
-        }
-        try {
-            inputOutputOptions =
-                    new FirebaseModelInputOutputOptions.Builder()
-                            .setInputFormat(0, FirebaseModelDataType.FLOAT32, new int[]{1, 299, 299, 3})
-                            .setOutputFormat(0, FirebaseModelDataType.FLOAT32, new int[]{1, 38})
-                            .build();
-        } catch (FirebaseMLException e) {
-            e.printStackTrace();
-        }
+        FirebaseModelInterpreterOptions options =
+                new FirebaseModelInterpreterOptions.Builder(localModel).build();
+        interpreter = FirebaseModelInterpreter.getInstance(options);
+        inputOutputOptions =
+                new FirebaseModelInputOutputOptions.Builder()
+                        .setInputFormat(0, FirebaseModelDataType.FLOAT32, new int[]{batchSize, inputImageSize, inputImageSize, imageChannels})
+                        .setOutputFormat(0, FirebaseModelDataType.FLOAT32, new int[]{batchSize, classifications})
+                        .build();
     }
 
-    private void processClassification(Bitmap bitmap) {
-        int batchNum = 0;
-        bitmap = Bitmap.createScaledBitmap(bitmap, 299, 299, true);
-        float[][][][] input = new float[1][299][299][3];
-        for (int x = 0; x < 299; x++) {
-            for (int y = 0; y < 299; y++) {
+    private void normalizeInput(Bitmap bitmap) {
+        Log.d(TAG, "normalizeInput: Bitmap normalization started at: " + Calendar.getInstance().getTime());
+        int batchNum = 0; //single image index
+        float[][][][] input = new float[batchSize][inputImageSize][inputImageSize][imageChannels];
+        for (int x = 0; x < inputImageSize; x++) {
+            for (int y = 0; y < inputImageSize; y++) {
                 int pixel = bitmap.getPixel(x, y);
                 // Normalize channel values to [0.0f, 1.0f]
                 input[batchNum][x][y][0] = (Color.red(pixel)) / 255.0f;
@@ -143,17 +154,20 @@ public class MainActivity extends AppCompatActivity {
                 input[batchNum][x][y][2] = (Color.blue(pixel)) / 255.0f;
             }
         }
-        imageView.setImageBitmap(bitmap);
+        Log.d(TAG, "processClassification: Bitmap normalization completed at: " + Calendar.getInstance().getTime());
         startInference(input);
     }
 
     private void startInference(float[][][][] input) {
+        Log.d(TAG, "processClassification: Inferences started at: " + Calendar.getInstance().getTime());
         FirebaseModelInputs inputs = null;
         try {
             inputs = new FirebaseModelInputs.Builder()
                     .add(input)  // add() as many input arrays as your model requires
                     .build();
+
         } catch (FirebaseMLException e) {
+            Log.d(TAG, "startInference: CustomModel rejected the input, maybe mismatch of DataType !!");
             e.printStackTrace();
         }
         interpreter.run(inputs, inputOutputOptions)
@@ -162,42 +176,33 @@ public class MainActivity extends AppCompatActivity {
                             @Override
                             public void onSuccess(FirebaseModelOutputs result) {
                                 float[][] output = result.getOutput(0);
-                                float[] probabilities = output[0];
-                                classification_results(probabilities);
+                                outputProbabilities = output[0];
+                                outputResult = "Confidence\n";
+                                for (int i = 0; i < classifications; i++) {
+                                    outputResult += outputProbabilities[i] + "\n";
+                                }
+                                Log.d(TAG, "onSuccess: Inferences were successful !!");
                             }
                         })
                 .addOnFailureListener(
                         new OnFailureListener() {
                             @Override
                             public void onFailure(@NonNull Exception e) {
-                                Log.d("inference status ", "onFailure: ");
-                                Toast.makeText(MainActivity.this, "Inference failed", Toast.LENGTH_SHORT).show();
+                                outputResult = "Inference Failed :(\n";
+                                Log.d(TAG, "onFailure: Inferences failed !!");
                             }
                         })
                 .addOnCompleteListener(
                         new OnCompleteListener<FirebaseModelOutputs>() {
                             @Override
                             public void onComplete(@NonNull Task<FirebaseModelOutputs> task) {
+                                Log.d(TAG, "onComplete: Inferences completed at: " + Calendar.getInstance().getTime());
+                                textView.setText(outputResult);
                                 alertDialog.dismiss();
                             }
                         }
                 );
-
     }
 
-    private void classification_results(float[] probabilities) {
-        String results = "Confidence\n";
-        for (int i = 0; i < 38; i++) {
-            results += probabilities[i] + "\n";
-        }
-        textView.setText(results);
-    }
-
-    private class ThumbnailHandler extends AsyncTask<Bitmap, Void, Void> {
-        @Override
-        protected Void doInBackground(Bitmap... bitmaps) {
-            return null;
-        }
-    }
 }
 
