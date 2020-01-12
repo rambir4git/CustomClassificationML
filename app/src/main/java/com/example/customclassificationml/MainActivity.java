@@ -2,16 +2,20 @@ package com.example.customclassificationml;
 
 import android.app.AlertDialog;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Matrix;
+import android.os.AsyncTask;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.google.android.gms.tasks.OnCompleteListener;
@@ -26,7 +30,6 @@ import com.google.firebase.ml.custom.FirebaseModelInputs;
 import com.google.firebase.ml.custom.FirebaseModelInterpreter;
 import com.google.firebase.ml.custom.FirebaseModelInterpreterOptions;
 import com.google.firebase.ml.custom.FirebaseModelOutputs;
-import com.otaliastudios.cameraview.BitmapCallback;
 import com.otaliastudios.cameraview.CameraListener;
 import com.otaliastudios.cameraview.CameraView;
 import com.otaliastudios.cameraview.PictureResult;
@@ -36,18 +39,25 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.util.Calendar;
 
 import dmax.dialog.SpotsDialog;
+import im.delight.android.location.SimpleLocation;
 
 public class MainActivity extends AppCompatActivity {
-    private Button startBtn;
+    public Button startBtn;
     private TextView textView;
     private CameraView cameraView;
     private ImageView imageView;
+    private ProgressBar progressBar1;
+    private ProgressBar progressBar2;
     private AlertDialog alertDialog;
     private final int inputImageSize = 299;
     private FirebaseModelInterpreter interpreter;
@@ -58,7 +68,8 @@ public class MainActivity extends AppCompatActivity {
     private JSONObject labels;
     private float[] outputProbabilities;
     private String outputResult;
-    private String TAG = "CustomModel: ";
+    private SimpleLocation location;
+    private String TAG = "CustomModel";
 
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -66,11 +77,25 @@ public class MainActivity extends AppCompatActivity {
         startBtn = findViewById(R.id.startBtn);
         textView = findViewById(R.id.textView);
         imageView = findViewById(R.id.imageView);
+        progressBar1 = findViewById(R.id.progressBar1);
+        progressBar2 = findViewById(R.id.progressBar2);
         cameraView = findViewById(R.id.cameraView);
         cameraView.setMode(Mode.PICTURE);
         cameraView.setLifecycleOwner(this);
+        try {
+            location = new SimpleLocation(MainActivity.this);
+            Log.d(TAG, "onCreate: Location services started successfully !!");
+            initializeModel();
+        } catch (SecurityException e) {
+            e.printStackTrace();
+            Toast.makeText(this, "Location permissions are not provided :(", Toast.LENGTH_SHORT).show();
+            Log.d(TAG, "onCreate: Failed to start location services !!");
+        } catch (FirebaseMLException e) {
+            Log.d(TAG, "onCreate: Failed to register CustomModel and Interpreter !!");
+        }
+
         alertDialog = new SpotsDialog.Builder()
-                .setContext(this)
+                .setContext(MainActivity.this)
                 .setMessage("Processing...")
                 .setCancelable(false)
                 .build();
@@ -86,23 +111,40 @@ public class MainActivity extends AppCompatActivity {
             public void onPictureTaken(@NonNull PictureResult result) {
                 Log.d(TAG, "onPictureTaken: Picture taken at: " + Calendar.getInstance().getTime());
                 super.onPictureTaken(result);
-                result.toBitmap(new BitmapCallback() {
-                    @Override
-                    public void onBitmapReady(@Nullable Bitmap bitmap) {
-                        bitmap = Bitmap.createScaledBitmap(bitmap, inputImageSize, inputImageSize, true);
-                        imageView.setImageBitmap(bitmap);
-                        alertDialog.show();
-                        normalizeInput(bitmap);
-                    }
-                });
+                new SavePicture().execute(result);
+                new RunModel().execute(result);
             }
         });
-        try {
-            initializeModel();
-            Log.d(TAG, "onCreate: CustomModel and Interpreter are successfully registered !!");
-        } catch (FirebaseMLException e) {
-            Log.d(TAG, "onCreate: Failed to register CustomModel and Interpreter !!");
-        }
+        imageView.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                //Start Gallery or History activity
+                Toast.makeText(MainActivity.this, "IMGBTN", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void initializeModel() throws FirebaseMLException {
+        getLabels();
+        FirebaseCustomLocalModel localModel = new FirebaseCustomLocalModel.Builder()
+                .setAssetFilePath("flower_model_optimized.tflite")
+                .build();
+        if (localModel == null)
+            throw new FirebaseMLException("Failed to load model. Either it doesn't exist or corrupted !!", 0);
+        FirebaseModelInterpreterOptions options =
+                new FirebaseModelInterpreterOptions.Builder(localModel).build();
+        interpreter = FirebaseModelInterpreter.getInstance(options);
+        inputOutputOptions =
+                new FirebaseModelInputOutputOptions.Builder()
+                        .setInputFormat(0, FirebaseModelDataType.FLOAT32, new int[]{batchSize, inputImageSize, inputImageSize, imageChannels})
+                        .setOutputFormat(0, FirebaseModelDataType.FLOAT32, new int[]{batchSize, classifications})
+                        .build();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        location.beginUpdates();
     }
 
     private void getLabels() {
@@ -126,19 +168,14 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void initializeModel() throws FirebaseMLException {
-        getLabels();
-        FirebaseCustomLocalModel localModel = new FirebaseCustomLocalModel.Builder()
-                .setAssetFilePath("flower_model_optimized.tflite")
-                .build();
-        FirebaseModelInterpreterOptions options =
-                new FirebaseModelInterpreterOptions.Builder(localModel).build();
-        interpreter = FirebaseModelInterpreter.getInstance(options);
-        inputOutputOptions =
-                new FirebaseModelInputOutputOptions.Builder()
-                        .setInputFormat(0, FirebaseModelDataType.FLOAT32, new int[]{batchSize, inputImageSize, inputImageSize, imageChannels})
-                        .setOutputFormat(0, FirebaseModelDataType.FLOAT32, new int[]{batchSize, classifications})
-                        .build();
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        location.endUpdates();
+        if (alertDialog != null) {
+            alertDialog.dismiss();
+            alertDialog = null;
+        }
     }
 
     private void normalizeInput(Bitmap bitmap) {
@@ -198,11 +235,88 @@ public class MainActivity extends AppCompatActivity {
                             public void onComplete(@NonNull Task<FirebaseModelOutputs> task) {
                                 Log.d(TAG, "onComplete: Inferences completed at: " + Calendar.getInstance().getTime());
                                 textView.setText(outputResult);
-                                alertDialog.dismiss();
                             }
                         }
                 );
     }
 
+    private class SavePicture extends AsyncTask<PictureResult, Void, Void> {
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+            if (!location.hasLocationEnabled()) {
+                Toast.makeText(MainActivity.this, "Turn on the Location !!", Toast.LENGTH_SHORT).show();
+                SimpleLocation.openSettings(MainActivity.this);
+            }
+        }
+
+        @Override
+        protected Void doInBackground(PictureResult... results) {
+            String imageName = "PIC_" + Calendar.getInstance().getTimeInMillis() + ".jpg";
+            String locationFileData = "ID: " + imageName +
+                    "\nLatLang: " + location.getLatitude() + "," + location.getLongitude() + "\n\n";
+            File imageFile = new File(getExternalFilesDir(null), imageName);
+            File locationFile = new File(getExternalFilesDir(null), "test_location.txt");
+            try {
+                FileOutputStream fileOutputStream = new FileOutputStream(imageFile);
+                fileOutputStream.write(results[0].getData());
+                fileOutputStream.close();
+
+                OutputStream outputStream = new FileOutputStream(locationFile, true);
+                OutputStreamWriter writer = new OutputStreamWriter(outputStream);
+                writer.write(locationFileData);
+                writer.flush();
+                writer.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            return null;
+        }
+
+        @Override
+        protected void onPostExecute(Void aVoid) {
+            super.onPostExecute(aVoid);
+
+        }
+    }
+
+    private class RunModel extends AsyncTask<PictureResult, Bitmap, Void> {
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+            alertDialog.show();
+            textView.setVisibility(View.GONE);
+            progressBar1.setVisibility(View.VISIBLE);
+            progressBar2.setVisibility(View.VISIBLE);
+        }
+
+        @Override
+        protected Void doInBackground(PictureResult... results) {
+            Bitmap bitmap;
+            Matrix matrix = new Matrix();
+            matrix.preRotate(results[0].getRotation());
+            bitmap = BitmapFactory.decodeByteArray(results[0].getData(), 0, results[0].getData().length);
+            bitmap = Bitmap.createScaledBitmap(bitmap, inputImageSize, inputImageSize, true);
+            bitmap = Bitmap.createBitmap(bitmap, 0, 0, inputImageSize, inputImageSize, matrix, true);
+            publishProgress(bitmap);
+            normalizeInput(bitmap);
+            return null;
+        }
+
+        @Override
+        protected void onProgressUpdate(Bitmap... values) {
+            super.onProgressUpdate(values);
+            imageView.setImageBitmap(values[0]);
+            progressBar1.setVisibility(View.GONE);
+        }
+
+        @Override
+        protected void onPostExecute(Void aVoid) {
+            super.onPostExecute(aVoid);
+            progressBar2.setVisibility(View.GONE);
+            textView.setVisibility(View.VISIBLE);
+            alertDialog.dismiss();
+        }
+    }
 }
 
