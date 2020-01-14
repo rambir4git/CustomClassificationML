@@ -63,7 +63,8 @@
             android:id="@+id/textView"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:text="inceptionV3"
+            android:scrollbars="vertical"
+            android:text="inception_restnet_V2"
             android:visibility="visible" />
 
         <ProgressBar

@@ -62,11 +62,10 @@ public class MainActivity extends AppCompatActivity {
     private final int inputImageSize = 299;
     private FirebaseModelInterpreter interpreter;
     private FirebaseModelInputOutputOptions inputOutputOptions;
-    private final int classifications = 5;
+    private final int classifications = 10;
     private final int imageChannels = 3;
     private final int batchSize = 1;
     private JSONObject labels;
-    private float[] outputProbabilities;
     private String outputResult;
     private SimpleLocation location;
     private String TAG = "CustomModel";
@@ -102,14 +101,14 @@ public class MainActivity extends AppCompatActivity {
         startBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                Log.d(TAG, "onClick: Requested to take a picture at: " + Calendar.getInstance().getTime());
+                Log.d(TAG, "onClick: Requested to take a picture");
                 cameraView.takePicture();
             }
         });
         cameraView.addCameraListener(new CameraListener() {
             @Override
             public void onPictureTaken(@NonNull PictureResult result) {
-                Log.d(TAG, "onPictureTaken: Picture taken at: " + Calendar.getInstance().getTime());
+                Log.d(TAG, "onPictureTaken: Picture taken");
                 super.onPictureTaken(result);
                 new SavePicture().execute(result);
                 new RunModel().execute(result);
@@ -127,7 +126,7 @@ public class MainActivity extends AppCompatActivity {
     private void initializeModel() throws FirebaseMLException {
         getLabels();
         FirebaseCustomLocalModel localModel = new FirebaseCustomLocalModel.Builder()
-                .setAssetFilePath("flower_model_optimized.tflite")
+                .setAssetFilePath("crop_model.tflite")
                 .build();
         if (localModel == null)
             throw new FirebaseMLException("Failed to load model. Either it doesn't exist or corrupted !!", 0);
@@ -141,17 +140,11 @@ public class MainActivity extends AppCompatActivity {
                         .build();
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        location.beginUpdates();
-    }
-
     private void getLabels() {
         String line = "";
         String results = "";
         try {
-            InputStream inputStream = this.getAssets().open("flower_labels.json");
+            InputStream inputStream = this.getAssets().open("crop_labels.json");
             BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
             while (line != null) {
                 results += line;
@@ -168,18 +161,8 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        location.endUpdates();
-        if (alertDialog != null) {
-            alertDialog.dismiss();
-            alertDialog = null;
-        }
-    }
-
     private void normalizeInput(Bitmap bitmap) {
-        Log.d(TAG, "normalizeInput: Bitmap normalization started at: " + Calendar.getInstance().getTime());
+        Log.d(TAG, "normalizeInput: Bitmap normalization started");
         int batchNum = 0; //single image index
         float[][][][] input = new float[batchSize][inputImageSize][inputImageSize][imageChannels];
         for (int x = 0; x < inputImageSize; x++) {
@@ -191,7 +174,7 @@ public class MainActivity extends AppCompatActivity {
                 input[batchNum][x][y][2] = (Color.blue(pixel)) / 255.0f;
             }
         }
-        Log.d(TAG, "processClassification: Bitmap normalization completed at: " + Calendar.getInstance().getTime());
+        Log.d(TAG, "processClassification: Bitmap normalization completed");
         startInference(input);
     }
 
@@ -212,11 +195,10 @@ public class MainActivity extends AppCompatActivity {
                         new OnSuccessListener<FirebaseModelOutputs>() {
                             @Override
                             public void onSuccess(FirebaseModelOutputs result) {
+                                outputResult = "Confidence: \n";
                                 float[][] output = result.getOutput(0);
-                                outputProbabilities = output[0];
-                                outputResult = "Confidence\n";
-                                for (int i = 0; i < classifications; i++) {
-                                    outputResult += outputProbabilities[i] + "\n";
+                                for (int i = 1; i < classifications; i++) {
+                                    outputResult += output[0][i] + "\n";
                                 }
                                 Log.d(TAG, "onSuccess: Inferences were successful !!");
                             }
@@ -235,6 +217,9 @@ public class MainActivity extends AppCompatActivity {
                             public void onComplete(@NonNull Task<FirebaseModelOutputs> task) {
                                 Log.d(TAG, "onComplete: Inferences completed at: " + Calendar.getInstance().getTime());
                                 textView.setText(outputResult);
+                                progressBar2.setVisibility(View.GONE);
+                                textView.setVisibility(View.VISIBLE);
+                                alertDialog.dismiss();
                             }
                         }
                 );
@@ -309,13 +294,21 @@ public class MainActivity extends AppCompatActivity {
             imageView.setImageBitmap(values[0]);
             progressBar1.setVisibility(View.GONE);
         }
+    }
 
-        @Override
-        protected void onPostExecute(Void aVoid) {
-            super.onPostExecute(aVoid);
-            progressBar2.setVisibility(View.GONE);
-            textView.setVisibility(View.VISIBLE);
+    @Override
+    protected void onResume() {
+        super.onResume();
+        location.beginUpdates();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        location.endUpdates();
+        if (alertDialog != null) {
             alertDialog.dismiss();
+            alertDialog = null;
         }
     }
 }
