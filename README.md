@@ -1,7 +1,7 @@
 # CustomClassificationML
 Android app to run custom tflite models
 
-create a assets folder at CustomClassificationML/app/src/main/*
+The assets folder is at CustomClassificationML/app/src/main/*
 place crop_model.tflite and crop_labels.json in that assets folder.
 NOTE:
 1) if you change file names make sure to change them in code aswell
